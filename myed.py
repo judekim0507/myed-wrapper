@@ -157,6 +157,25 @@ class MyEdClient:
                 })
         return assignments
 
+    def get_attendance(self) -> list[dict]:
+        """Fetch attendance for the currently selected class."""
+        r = self.session.get(
+            f"{self.BASE_URL}/contextList.do",
+            params={"navkey": "academics.classes.list.pat"},
+        )
+        self._check_session(r)
+        soup = BeautifulSoup(r.text, "html.parser")
+        self._get_token(soup)
+
+        records = []
+        rows = soup.find_all("tr", class_=lambda c: c and "listCell" in c)
+        for row in rows:
+            cells = row.find_all("td")
+            text = [c.get_text(strip=True) for c in cells]
+            if len(text) >= 3:
+                records.append({"raw": text})
+        return records
+
     def get_student_info(self) -> dict:
         r = self.session.get(
             f"{self.BASE_URL}/portalStudentDetail.do",
@@ -167,7 +186,6 @@ class MyEdClient:
         self._get_token(soup)
 
         info = {}
-        # Try multiple selector patterns used by Aspen
         for row in soup.find_all("tr"):
             label_td = row.find("td", class_=lambda c: c and "label" in c.lower())
             value_td = row.find("td", class_=lambda c: c and "value" in c.lower())
@@ -182,6 +200,66 @@ class MyEdClient:
             if key and val:
                 info[key] = val
         return info
+
+    def get_groups(self) -> list[dict]:
+        r = self.session.get(
+            f"{self.BASE_URL}/portalGroupList.do",
+            params={"navkey": "extras.groups.list"},
+        )
+        self._check_session(r)
+        soup = BeautifulSoup(r.text, "html.parser")
+        self._get_token(soup)
+
+        groups = []
+        rows = soup.find_all("tr", class_=lambda c: c and "listCell" in c)
+        for row in rows:
+            cells = row.find_all("td")
+            text = [c.get_text(strip=True) for c in cells]
+            if len(text) >= 2:
+                groups.append({"raw": text})
+        return groups
+
+    def get_calendar(self) -> list[dict]:
+        r = self.session.get(
+            f"{self.BASE_URL}/planner.do",
+            params={"navkey": "plannerCalendar.plannerView.planner"},
+        )
+        self._check_session(r)
+        soup = BeautifulSoup(r.text, "html.parser")
+        self._get_token(soup)
+
+        events = []
+        # Calendar events can be in various structures — grab anything that looks like an event
+        for item in soup.find_all(class_=lambda c: c and any(x in c.lower() for x in ["event", "planner", "calendar"]) if isinstance(c, str) else False):
+            text = item.get_text(strip=True)
+            if text:
+                events.append(text)
+        # Also try table rows
+        rows = soup.find_all("tr", class_=lambda c: c and "listCell" in c)
+        for row in rows:
+            cells = row.find_all("td")
+            text = [c.get_text(strip=True) for c in cells]
+            if any(text):
+                events.append(" | ".join(t for t in text if t))
+        return events
+
+    def get_locker(self) -> list[dict]:
+        r = self.session.get(
+            f"{self.BASE_URL}/studentLockerList.do",
+            params={"navkey": "locker.files.list"},
+        )
+        self._check_session(r)
+        soup = BeautifulSoup(r.text, "html.parser")
+        self._get_token(soup)
+
+        files = []
+        rows = soup.find_all("tr", class_=lambda c: c and "listCell" in c)
+        for row in rows:
+            cells = row.find_all("td")
+            text = [c.get_text(strip=True) for c in cells]
+            if len(text) >= 2:
+                files.append({"raw": text})
+        return files
 
 
 def clear():
@@ -232,11 +310,47 @@ def run_tui():
             print("\n  Login failed.")
             return
 
-    try:
-        classes = client.get_classes()
-    except SessionExpiredError as e:
-        print(f"\n  {e}")
-        return
+    main_menu(client)
+
+
+def main_menu(client):
+    while True:
+        clear()
+        print()
+        print("  ╔══════════════════════════════════╗")
+        print("  ║         MyEd BC Wrapper          ║")
+        print("  ╚══════════════════════════════════╝")
+        print()
+        print("  1) Academics (Classes & Grades)")
+        print("  2) My Info")
+        print("  3) Groups")
+        print("  4) Calendar")
+        print("  5) Locker")
+        print("  q) Quit")
+        print()
+        cmd = input("  > ").strip().lower()
+
+        try:
+            if cmd == "q":
+                print()
+                break
+            elif cmd == "1":
+                view_academics(client)
+            elif cmd == "2":
+                view_student_info(client)
+            elif cmd == "3":
+                view_groups(client)
+            elif cmd == "4":
+                view_calendar(client)
+            elif cmd == "5":
+                view_locker(client)
+        except SessionExpiredError as e:
+            print(f"\n  {e}")
+            input("  Press Enter to continue...")
+
+
+def view_academics(client):
+    classes = client.get_classes()
 
     while True:
         clear()
@@ -246,7 +360,6 @@ def run_tui():
         print("  ╚══════════════════════════════════════════════════════════════╝")
         print()
 
-        # Table header
         print(f"  {'#':>3}  {'Class':<45} {'Teacher':<25} {'Room':<10} {'Grade':<8}")
         print(f"  {'─' * 3}  {'─' * 45} {'─' * 25} {'─' * 10} {'─' * 8}")
 
@@ -258,57 +371,27 @@ def run_tui():
             print(f"  {i:>3}  {name:<45} {teacher:<25} {room:<10} {grade:<8}")
 
         print()
-        print("  [#] View class details    [r] Refresh    [i] Student info    [q] Quit")
+        print("  [#] View class    [r] Refresh    [b] Back")
         print()
         cmd = input("  > ").strip().lower()
 
-        if cmd == "q":
-            print()
+        if cmd == "b":
             break
         elif cmd == "r":
-            try:
-                classes = client.get_classes()
-            except SessionExpiredError as e:
-                print(f"\n  {e}")
-                input("  Press Enter to continue...")
-        elif cmd == "i":
-            clear()
-            print()
-            try:
-                info = client.get_student_info()
-                lines = [f"{k}: {v}" for k, v in info.items()]
-                if lines:
-                    box("Student Info", lines)
-                else:
-                    print("  No student info found.")
-            except SessionExpiredError as e:
-                print(f"\n  {e}")
-            print()
-            input("  Press Enter to go back...")
+            classes = client.get_classes()
         elif cmd.isdigit():
             idx = int(cmd) - 1
             if 0 <= idx < len(classes):
-                selected = classes[idx]
-                view_class(client, selected)
-                # Re-fetch classes to reset form state
-                try:
-                    classes = client.get_classes()
-                except SessionExpiredError:
-                    pass
+                view_class(client, classes[idx])
+                classes = client.get_classes()
             else:
                 print(f"  Invalid number. Choose 1-{len(classes)}.")
                 input("  Press Enter to continue...")
 
 
 def view_class(client, cls):
-    """View details and assignments for a selected class."""
-    try:
-        client.get_class_detail(cls["oid"])
-        assignments = client.get_assignments()
-    except SessionExpiredError as e:
-        print(f"\n  {e}")
-        input("  Press Enter to go back...")
-        return
+    client.get_class_detail(cls["oid"])
+    tab = "assignments"
 
     while True:
         clear()
@@ -320,32 +403,110 @@ def view_class(client, cls):
         ])
         print()
 
-        if assignments:
-            print(f"  {'#':>3}  {'Assignment':<40} {'Due':<12} {'%':<6} {'Score':<14} {'Feedback'}")
-            print(f"  {'─' * 3}  {'─' * 40} {'─' * 12} {'─' * 6} {'─' * 14} {'─' * 20}")
-            for i, a in enumerate(assignments, 1):
-                name = truncate(a["name"], 40)
-                due = a["due"][:12]
-                pct = a["pct"] or "—"
-                score = a["score"] or "—"
-                fb = truncate(a["feedback"], 30) if a["feedback"] else ""
-                print(f"  {i:>3}  {name:<40} {due:<12} {pct:<6} {score:<14} {fb}")
-        else:
-            print("  No assignments found.")
+        if tab == "assignments":
+            assignments = client.get_assignments()
+            print(f"  ── Assignments {'─' * 50}")
+            print()
+            if assignments:
+                print(f"  {'#':>3}  {'Assignment':<40} {'Due':<12} {'%':<6} {'Score':<14} {'Feedback'}")
+                print(f"  {'─' * 3}  {'─' * 40} {'─' * 12} {'─' * 6} {'─' * 14} {'─' * 20}")
+                for i, a in enumerate(assignments, 1):
+                    name = truncate(a["name"], 40)
+                    due = a["due"][:12]
+                    pct = a["pct"] or "—"
+                    score = a["score"] or "—"
+                    fb = truncate(a["feedback"], 30) if a["feedback"] else ""
+                    print(f"  {i:>3}  {name:<40} {due:<12} {pct:<6} {score:<14} {fb}")
+            else:
+                print("  No assignments found.")
+
+        elif tab == "attendance":
+            records = client.get_attendance()
+            print(f"  ── Attendance {'─' * 51}")
+            print()
+            if records:
+                for i, r in enumerate(records, 1):
+                    print(f"  {i:>3}  {' | '.join(t for t in r['raw'] if t)}")
+            else:
+                print("  No attendance records.")
 
         print()
-        print("  [b] Back    [r] Refresh")
+        print(f"  [a] Assignments{' *' if tab == 'assignments' else ''}    "
+              f"[t] Attendance{' *' if tab == 'attendance' else ''}    "
+              f"[b] Back")
         print()
         cmd = input("  > ").strip().lower()
 
         if cmd == "b":
             break
-        elif cmd == "r":
-            try:
-                assignments = client.get_assignments()
-            except SessionExpiredError as e:
-                print(f"\n  {e}")
-                input("  Press Enter to continue...")
+        elif cmd == "a":
+            tab = "assignments"
+        elif cmd == "t":
+            tab = "attendance"
+
+
+def view_student_info(client):
+    clear()
+    print()
+    info = client.get_student_info()
+    if info:
+        lines = [f"{k}: {v}" for k, v in info.items()]
+        box("My Info", lines)
+    else:
+        print("  No student info found.")
+    print()
+    input("  Press Enter to go back...")
+
+
+def view_groups(client):
+    clear()
+    print()
+    groups = client.get_groups()
+    print("  ╔══════════════════════════════════╗")
+    print("  ║             GROUPS               ║")
+    print("  ╚══════════════════════════════════╝")
+    print()
+    if groups:
+        for i, g in enumerate(groups, 1):
+            print(f"  {i:>3}  {' | '.join(t for t in g['raw'] if t)}")
+    else:
+        print("  No groups found.")
+    print()
+    input("  Press Enter to go back...")
+
+
+def view_calendar(client):
+    clear()
+    print()
+    events = client.get_calendar()
+    print("  ╔══════════════════════════════════╗")
+    print("  ║            CALENDAR              ║")
+    print("  ╚══════════════════════════════════╝")
+    print()
+    if events:
+        for e in events:
+            print(f"  • {e}")
+    else:
+        print("  No upcoming events.")
+    print()
+    input("  Press Enter to go back...")
+
+
+def view_locker(client):
+    clear()
+    print()
+    files = client.get_locker()
+    print("  ╔══════════════════════════════════╗")
+    print("  ║             LOCKER               ║")
+    print("  ╚══════════════════════════════════╝")
+    print()
+    if files:
+        for i, f in enumerate(files, 1):
+            print(f"  {i:>3}  {' | '.join(t for t in f['raw'] if t)}")
+    else:
+        print("  Locker is empty.")
+    print()
+    input("  Press Enter to go back...")
 
 
 if __name__ == "__main__":
