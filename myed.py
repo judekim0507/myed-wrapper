@@ -40,24 +40,40 @@ class MyEdClient:
             self._token = tag["value"]
 
     def login(self, username: str, password: str) -> bool:
-        r = self.session.get(f"{self.BASE_URL}/logon.do")
-        soup = BeautifulSoup(r.text, "html.parser")
-        self._get_token(soup)
+        """Login via headless browser (the login page is an Angular SPA)."""
+        from playwright.sync_api import sync_playwright
 
-        # Extract all form fields dynamically
-        form = soup.find("form")
-        payload = self._extract_form(soup, form.get("name") if form else None) if form else {}
-        payload["username"] = username
-        payload["password"] = password
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto(f"{self.BASE_URL}/logon.do")
 
-        action = form.get("action", "/aspen/logon.do") if form else "/aspen/logon.do"
-        url = f"https://myeducation.gov.bc.ca{action}" if action.startswith("/") else action
+            # Wait for Angular to render the form
+            page.wait_for_selector("input[formcontrolname='username']", timeout=15000)
 
-        r = self.session.post(url, data=payload)
-        if "logon.do" in r.url or "Invalid" in r.text:
-            return False
-        soup = BeautifulSoup(r.text, "html.parser")
-        self._get_token(soup)
+            page.fill("input[formcontrolname='username']", username)
+            page.fill("input[formcontrolname='password']", password)
+
+            # Click the "Log In" button (not type=submit, just a regular button)
+            page.click("button:has-text('Log In')")
+
+            # Wait for redirect to main app (or stay on login = failed)
+            try:
+                page.wait_for_url("**/home.do*", timeout=15000)
+            except Exception:
+                browser.close()
+                return False
+
+            # Transfer all cookies from browser to requests session
+            for cookie in page.context.cookies():
+                self.session.cookies.set(
+                    cookie["name"],
+                    cookie["value"],
+                    domain=cookie.get("domain", "myeducation.gov.bc.ca"),
+                    path=cookie.get("path", "/"),
+                )
+
+            browser.close()
         return True
 
     def get_classes(self) -> list[dict]:
@@ -211,6 +227,7 @@ def run_tui():
         client = MyEdClient()
         user = input("  Username: ")
         pw = getpass.getpass("  Password: ")
+        print("  Logging in (headless browser)...", flush=True)
         if not client.login(user, pw):
             print("\n  Login failed.")
             return
