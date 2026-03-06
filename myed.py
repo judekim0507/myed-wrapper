@@ -40,41 +40,38 @@ class MyEdClient:
             self._token = tag["value"]
 
     def login(self, username: str, password: str) -> bool:
-        """Login via headless browser (the login page is an Angular SPA)."""
-        from playwright.sync_api import sync_playwright
+        # Step 1: Invalidate any existing SSO session
+        self.session.post(
+            f"{self.BASE_URL}/rest/vithar/ssoVerify/invalidate",
+            json={"withCredentials": True},
+        )
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            page.goto(f"{self.BASE_URL}/logon.do")
+        # Step 2: Authenticate via REST API → get JWT token
+        r = self.session.post(
+            "https://myeducation.gov.bc.ca/app/rest/auth",
+            data={"username": username, "password": password},
+            headers={
+                "deploymentid": "aspen",
+                "content-type": "application/x-www-form-urlencoded",
+                "accept": "application/json",
+            },
+        )
+        if r.status_code != 200:
+            return False
 
-            # Wait for Angular to render the form
-            page.wait_for_selector("input[formcontrolname='username']", timeout=15000)
+        auth_data = r.json()
+        token = auth_data.get("authToken") or auth_data.get("token")
+        if not token:
+            return False
 
-            page.fill("input[formcontrolname='username']", username)
-            page.fill("input[formcontrolname='password']", password)
+        # Step 3: Exchange token for Aspen session cookies
+        r = self.session.get(
+            "https://myeducation.gov.bc.ca/app/rest/aspen/sso",
+            params={"authToken": token, "deploymentId": "aspen"},
+        )
 
-            # Click the "Log In" button (not type=submit, just a regular button)
-            page.click("button:has-text('Log In')")
-
-            # Wait for redirect to main app (or stay on login = failed)
-            try:
-                page.wait_for_url("**/home.do*", timeout=15000)
-            except Exception:
-                browser.close()
-                return False
-
-            # Transfer all cookies from browser to requests session
-            for cookie in page.context.cookies():
-                self.session.cookies.set(
-                    cookie["name"],
-                    cookie["value"],
-                    domain=cookie.get("domain", "myeducation.gov.bc.ca"),
-                    path=cookie.get("path", "/"),
-                )
-
-            browser.close()
-        return True
+        # Should end up at home.do after redirects
+        return "home.do" in r.url or r.status_code == 200
 
     def get_classes(self) -> list[dict]:
         r = self.session.get(
@@ -305,7 +302,7 @@ def run_tui():
         client = MyEdClient()
         user = input("  Username: ")
         pw = getpass.getpass("  Password: ")
-        print("  Logging in (headless browser)...", flush=True)
+        print("  Logging in...", flush=True)
         if not client.login(user, pw):
             print("\n  Login failed.")
             return
